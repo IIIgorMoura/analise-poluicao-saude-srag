@@ -21,7 +21,7 @@ df_prop_24_sorted = df_prop_24_sorted.iloc[:20]
 
 # Configurações  iniciais
 st.set_page_config(page_title="Impacto - Indústria Química", page_icon="📈", layout="wide")
-st.sidebar.header("Selecione os Filtros")
+# st.sidebar.header("Selecione os Filtros")
 
 
 def Home():
@@ -45,8 +45,8 @@ def Home():
     
     st.markdown('- - -')
 
-    st.sidebar.write('filtro: POLUENTE')
-    st.sidebar.write('filtro: PERÍODO')
+    # st.sidebar.write('filtro: POLUENTE')
+    # st.sidebar.write('filtro: PERÍODO')
 
     # GRÁFICO: Poluição MÉDIA por REGIÃO
     poluentes = ['BS-MP10', 'BS-MP2.5', 'BS-NO2', 'BS-SO2',
@@ -263,71 +263,72 @@ def Home():
 
 
 
-    # GRÁFICO: Previsão de casos SRAG até 2025
+    # GRÁFICO: Previsão de casos SRAG até 2026
+# Coloque todo o processo de treino e plotagem dentro do spinner
+    with st.spinner('⏳ Estimando incidência de SRAG nos próximos anos usando séries temporais...'):
+        df_23= pd.read_csv('./DBs/SRAG_23_filtrar.csv', encoding='latin1', sep=';')
+        df_24 = pd.read_csv('./DBs/SRAG_24_filtrar.csv', encoding='latin1', sep=';')
 
-    df_23= pd.read_csv('./DBs/SRAG_23_filtrar.csv', encoding='latin1', sep=';')
-    df_24 = pd.read_csv('./DBs/SRAG_24_filtrar.csv', encoding='latin1', sep=';')
+        def preprocess(df, ano_max):
+            df = df.dropna(subset=['DATA DE ENTRADA'])
+            df['DATA DE ENTRADA'] = pd.to_datetime(df['DATA DE ENTRADA'], format='%d/%m/%Y', errors='coerce')
+            df = df[df['ESTADO'] == 'SP']
+            df = df[df['DATA DE ENTRADA'].dt.year <= ano_max]
+            return df
 
-    def preprocess(df, ano_max):
-        df = df.dropna(subset=['DATA DE ENTRADA'])
-        df['DATA DE ENTRADA'] = pd.to_datetime(df['DATA DE ENTRADA'], format='%d/%m/%Y', errors='coerce')
-        df = df[df['ESTADO'] == 'SP']
-        df = df[df['DATA DE ENTRADA'].dt.year <= ano_max]
-        return df
+        df_24_alt = preprocess(df_24, 2024)
+        df_23_alt = preprocess(df_23, 2023)
 
-    df_24_alt = preprocess(df_24, 2024)
-    df_23_alt = preprocess(df_23, 2023)
+        # === AGRUPAMENTO SEMANAL ===
+        df_model = pd.concat([df_23_alt[['DATA DE ENTRADA']], df_24_alt[['DATA DE ENTRADA']]])
+        df_model = df_model.groupby('DATA DE ENTRADA').size()
+        df_model_weekly = df_model.resample('W').sum().reset_index(name='CASOS')
+        df_model_weekly.set_index('DATA DE ENTRADA', inplace=True)
+        df_model_weekly = df_model_weekly.fillna(0)
 
-    # === AGRUPAMENTO SEMANAL ===
-    df_model = pd.concat([df_23_alt[['DATA DE ENTRADA']], df_24_alt[['DATA DE ENTRADA']]])
-    df_model = df_model.groupby('DATA DE ENTRADA').size()
-    df_model_weekly = df_model.resample('W').sum().reset_index(name='CASOS')
-    df_model_weekly.set_index('DATA DE ENTRADA', inplace=True)
-    df_model_weekly = df_model_weekly.fillna(0)
+        # === TREINO E PREVISÃO ===
+        train = df_model_weekly[df_model_weekly.index.year <= 2024]
+        model = ARIMA(train['CASOS'], order=(48, 0, 3))  # Parâmetros podem ser ajustados
+        model_fit = model.fit()
 
-    # === TREINO E PREVISÃO ===
-    train = df_model_weekly[df_model_weekly.index.year <= 2024]
-    model = ARIMA(train['CASOS'], order=(48, 0, 3))  # Parâmetros podem ser ajustados
-    model_fit = model.fit()
+        # Prever 52 semanas de 2025
+        steps = 104
+        future_dates = pd.date_range(start='2025-01-01', periods=steps, freq='W-SUN')
+        previsaoArima = model_fit.forecast(steps=steps)
+        df_previsoes = pd.DataFrame({'ds': future_dates, 'Previsao_ARIMA': previsaoArima})
 
-    # Prever 52 semanas de 2025
-    steps = 52
-    future_dates = pd.date_range(start='2025-01-01', periods=steps, freq='W-SUN')
-    previsaoArima = model_fit.forecast(steps=steps)
-    df_previsoes = pd.DataFrame({'ds': future_dates, 'Previsao_ARIMA': previsaoArima})
+        # === GRÁFICO INTERATIVO COM PLOTLY ===
+        fig_previsao = go.Figure()
 
-    # === GRÁFICO INTERATIVO COM PLOTLY ===
-    fig_previsao = go.Figure()
+        # Histórico 2023-2024
+        fig_previsao.add_trace(go.Scatter(
+            x=df_model_weekly.index,
+            y=df_model_weekly['CASOS'],
+            mode='lines',
+            name='Histórico (2023-2024)',
+            line=dict(color='red')
+        ))
 
-    # Histórico 2023-2024
-    fig_previsao.add_trace(go.Scatter(
-        x=df_model_weekly.index,
-        y=df_model_weekly['CASOS'],
-        mode='lines',
-        name='Histórico (2023-2024)',
-        line=dict(color='red')
-    ))
+        # Previsão 2025
+        fig_previsao.add_trace(go.Scatter(
+            x=df_previsoes['ds'],
+            y=df_previsoes['Previsao_ARIMA'],
+            mode='lines',
+            name='Previsão ARIMA (2025-2026)',
+            line=dict(color='green', dash='dash')
+        ))
 
-    # Previsão 2025
-    fig_previsao.add_trace(go.Scatter(
-        x=df_previsoes['ds'],
-        y=df_previsoes['Previsao_ARIMA'],
-        mode='lines',
-        name='Previsão ARIMA (2025)',
-        line=dict(color='green', dash='dash')
-    ))
+        fig_previsao.update_layout(
+            title='📉 Casos Semanais de SRAG em SP - Previsão com Machine Learning',
+            xaxis_title='Período',
+            yaxis_title='Número de Casos',
+            hovermode='x unified',
+            template='plotly_white',
+            xaxis_tickformat='%b\n%Y',
+    
+        )
 
-    fig_previsao.update_layout(
-        title='📉 Casos Semanais de SRAG em SP - Previsão com Machine Learning',
-        xaxis_title='Período',
-        yaxis_title='Número de Casos',
-        hovermode='x unified',
-        template='plotly_white',
-        xaxis_tickformat='%b\n%Y',
-  
-    )
-
-    st.plotly_chart(fig_previsao, use_container_width=True)
+        st.plotly_chart(fig_previsao, use_container_width=True)
 
 
 
